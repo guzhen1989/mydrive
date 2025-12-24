@@ -1,4 +1,5 @@
 use tauri::State;
+use serde::{Deserialize};
 use crate::{AppState, error::Result, models::TransferTask};
 
 #[tauri::command]

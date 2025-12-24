@@ -9,6 +9,7 @@
         </template>
       </div>
       <div class="actions">
+        <button @click="handleUpload" class="upload-btn">上传</button>
         <button @click="refresh">刷新</button>
       </div>
     </div>
@@ -31,8 +32,7 @@
           </div>
         </div>
         <div class="actions-menu" v-if="!obj.is_dir">
-          <button @click.stop="handleDownload(obj)" class="download-btn">下载</button>
-          <button @click.stop="handleDelete(obj)" class="delete-btn">删除</button>
+          <button v-if="settingsStore.showDeleteButton" @click.stop="handleDeleteWithoutConfirm(obj)" class="delete-btn">删除</button>
         </div>
       </div>
 
@@ -56,11 +56,13 @@ import { computed, watch, ref } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useBucketStore } from '../stores/bucket'
 import { useObjectStore } from '../stores/object'
+import { useSettingsStore } from '../stores/settings'
 import { api, type ObjectInfo } from '../api'
 import MediaViewer from './MediaViewer.vue'
 
 const bucketStore = useBucketStore()
 const objectStore = useObjectStore()
+const settingsStore = useSettingsStore()
 
 const { currentBucket } = storeToRefs(bucketStore)
 const { objects, currentPrefix, loading } = storeToRefs(objectStore)
@@ -169,31 +171,196 @@ function handleDoubleClick(obj: ObjectInfo) {
 
 async function handleDelete(obj: ObjectInfo) {
   if (confirm(`确定要删除 "${getDisplayName(obj.key)}" 吗?`)) {
-    if (currentBucket.value) {
-      await objectStore.deleteObject(currentBucket.value, obj.key)
+    try {
+      if (currentBucket.value) {
+        await objectStore.deleteObject(currentBucket.value, obj.key)
+        alert('文件已成功删除')
+      }
+    } catch (error) {
+      console.error('删除文件失败:', error)
+      alert('删除文件失败: ' + (error as Error).message)
     }
+  } else {
+    // 用户点击了取消
+    console.log('删除操作已取消')
   }
 }
 
-async function handleDownload(obj: ObjectInfo) {
+async function handleDeleteWithoutConfirm(obj: ObjectInfo) {
   try {
-    // 使用系统对话框选择保存路径
-    const path = await import('@tauri-apps/api/dialog').then(dialog => 
-      dialog.save({ 
-        title: '保存文件',
-        defaultPath: getDisplayName(obj.key)
+    if (currentBucket.value) {
+      await objectStore.deleteObject(currentBucket.value, obj.key)
+    }
+  } catch (error) {
+    console.error('删除文件失败:', error)
+    alert('删除文件失败: ' + (error as Error).message)
+  }
+}
+
+
+
+async function handleUpload() {
+  try {
+    // 使用系统文件选择对话框，允许选择文件和文件夹
+    const selected = await import('@tauri-apps/api/dialog').then(dialog => 
+      dialog.open({
+        title: '选择文件或文件夹上传',
+        multiple: true, // 允许选择多个文件或文件夹
+        directory: true // 允许选择文件夹
       })
     );
     
-    if (path) {
-      // 调用下载函数
-      await api.downloadFile(currentBucket.value!, obj.key, path);
-      alert('下载任务已开始');
+    if (selected) {
+      const paths = Array.isArray(selected) ? selected : [selected];
+      
+      for (const path of paths) {
+        // 检查路径是否为文件夹
+        if (await isDirectory(path)) {
+          // 如果是文件夹，递归上传文件夹内容
+          await uploadFolder(path);
+        } else {
+          // 如果是文件，直接上传
+          const fileName = path.split('/').pop() || path.split('\\').pop() || 'unknown';
+          const objectKey = currentPrefix.value ? `${currentPrefix.value}${fileName}` : fileName;
+          
+          try {
+            // 调用API上传文件
+            const taskId = await api.uploadFile(path, currentBucket.value!, objectKey);
+            console.log('上传任务已启动，任务ID:', taskId);
+            
+            // 等待上传完成，定期检查任务状态
+            await waitForUploadCompletion(taskId);
+            
+          } catch (error) {
+            console.error('文件上传失败:', error);
+            alert(`文件上传失败: ${fileName} - ${(error as Error).message}`);
+          }
+        }
+      }
+      
+      // 上传完成后刷新列表
+      refresh();
+      alert(`成功上传 ${paths.length} 个项目`);
     }
   } catch (error) {
-    console.error('下载失败:', error);
-    alert('下载失败: ' + (error as Error).message);
+    console.error('选择文件失败:', error);
+    alert('选择文件失败: ' + (error as Error).message);
   }
+}
+
+// 检查路径是否为文件夹
+async function isDirectory(path: string): Promise<boolean> {
+  try {
+    // 尝试导入fs插件检查路径类型
+    const { readDir } = await import('@tauri-apps/api/fs');
+    try {
+      // 尝试读取目录，如果成功则为文件夹
+      await readDir(path);
+      return true;
+    } catch (e) {
+      // 如果读取目录失败，则为文件
+      return false;
+    }
+  } catch (e) {
+    // 如果无法使用fs插件，则通过路径格式判断
+    return path.endsWith('/') || path.endsWith('\\');
+  }
+}
+
+// 上传整个文件夹
+async function uploadFolder(folderPath: string) {
+  try {
+    // 导入fs插件来处理文件夹
+    const { readDir } = await import('@tauri-apps/api/fs');
+    
+    // 递归读取文件夹内容
+    const entries = await readDirRecursive(folderPath);
+    
+    for (const entry of entries) {
+      if (entry.kind === 'file') { // 只处理文件
+        // 计算相对于根文件夹的路径
+        const relativePath = entry.path.replace(folderPath, '').replace(/^[/\\]/, '');
+        const fullObjectKey = currentPrefix.value ? `${currentPrefix.value}${relativePath}` : relativePath;
+        
+        try {
+          const taskId = await api.uploadFile(entry.path, currentBucket.value!, fullObjectKey);
+          console.log('上传任务已启动，任务ID:', taskId, '路径:', fullObjectKey);
+          
+          // 等待上传完成，定期检查任务状态
+          await waitForUploadCompletion(taskId);
+        } catch (error) {
+          console.error('文件上传失败:', entry.path, error);
+          alert(`文件上传失败: ${entry.path} - ${(error as Error).message}`);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('上传文件夹失败:', error);
+    alert('上传文件夹失败: ' + (error as Error).message);
+  }
+}
+
+// 递归读取目录
+async function readDirRecursive(dirPath: string): Promise<{path: string, kind: 'file' | 'dir'}[]> {
+  const result = [];
+  try {
+    const { readDir } = await import('@tauri-apps/api/fs');
+    
+    const entries = await readDir(dirPath, { recursive: false });
+    
+    for (const entry of entries) {
+      if (entry.children) { // 是文件夹
+        const subEntries = await readDirRecursive(entry.path);
+        result.push(...subEntries);
+      } else { // 是文件
+        result.push({ path: entry.path, kind: 'file' as const });
+      }
+    }
+  } catch (error) {
+    console.error('读取目录失败:', dirPath, error);
+  }
+  
+  return result;
+}
+
+
+// 等待上传任务完成
+async function waitForUploadCompletion(taskId: string) {
+  const maxWaitTime = 300000; // 最大等待时间5分钟
+  const checkInterval = 1000; // 检查间隔1秒
+  const startTime = Date.now();
+  
+  while (Date.now() - startTime < maxWaitTime) {
+    try {
+      const tasks = await api.getTransferTasks();
+      const task = tasks.find(t => t.task_id === taskId);
+      
+      if (!task) {
+        console.error('未找到任务:', taskId);
+        throw new Error('未找到上传任务');
+      }
+      
+      if (task.status === 'completed') {
+        console.log('上传任务完成:', taskId);
+        return;
+      } else if (task.status === 'failed') {
+        console.error('上传任务失败:', taskId, task.error_message);
+        throw new Error(task.error_message || '上传任务失败');
+      } else if (task.status === 'cancelled') {
+        console.error('上传任务已取消:', taskId);
+        throw new Error('上传任务已取消');
+      }
+      
+      // 等待一段时间再检查
+      await new Promise(resolve => setTimeout(resolve, checkInterval));
+      
+    } catch (error) {
+      console.error('检查上传任务状态失败:', error);
+      throw error;
+    }
+  }
+  
+  throw new Error('上传任务超时');
 }
 
 function refresh() {
@@ -251,6 +418,24 @@ function refresh() {
   background-color: white;
   cursor: pointer;
   font-size: 14px;
+}
+
+.upload-btn {
+  margin-right: 8px;
+  background-color: #4CAF50;
+  color: white;
+  border: 1px solid #4CAF50;
+}
+
+.upload-btn:hover {
+  background-color: #45a049;
+}
+
+@media (prefers-color-scheme: dark) {
+  .upload-btn {
+    background-color: #4CAF50;
+    border-color: #4CAF50;
+  }
 }
 
 .actions button:hover {

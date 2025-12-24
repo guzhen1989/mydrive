@@ -79,12 +79,44 @@ impl MinioClient {
     }
     
     pub async fn create_bucket(&self, bucket_name: &str) -> Result<()> {
+        // 验证存储桶名称
+        if bucket_name.is_empty() {
+            return Err(AppError::S3("存储桶名称不能为空".to_string()));
+        }
+        
+        // S3标准要求存储桶名称只能包含小写字母、数字和连字符，长度为3-63个字符
+        // 且必须以字母或数字开头和结尾
+        if bucket_name.len() < 3 || bucket_name.len() > 63 {
+            return Err(AppError::S3("存储桶名称长度必须在3-63个字符之间".to_string()));
+        }
+        
+        // 检查是否只包含允许的字符
+        if !bucket_name.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') {
+            return Err(AppError::S3("存储桶名称只能包含小写字母、数字和连字符".to_string()));
+        }
+        
+        // 检查是否以字母或数字开头和结尾
+        if let Some(first_char) = bucket_name.chars().next() {
+            if !first_char.is_ascii_alphanumeric() {
+                return Err(AppError::S3("存储桶名称必须以字母或数字开头".to_string()));
+            }
+        }
+        
+        if let Some(last_char) = bucket_name.chars().last() {
+            if !last_char.is_ascii_alphanumeric() {
+                return Err(AppError::S3("存储桶名称必须以字母或数字结尾".to_string()));
+            }
+        }
+        
         self.client
             .create_bucket()
             .bucket(bucket_name)
             .send()
             .await
-            .map_err(|e| AppError::S3(e.to_string()))?;
+            .map_err(|e| {
+                eprintln!("S3 CreateBucket Error: {:?}", e);
+                AppError::S3(e.to_string())
+            })?;
         
         Ok(())
     }

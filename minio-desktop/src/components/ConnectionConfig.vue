@@ -50,6 +50,13 @@
           </label>
         </div>
 
+        <div class="form-group checkbox">
+          <label>
+            <input v-model="form.showDeleteButton" type="checkbox" />
+            显示删除按钮
+          </label>
+        </div>
+
         <div v-if="error" class="error-message">
           {{ error }}
         </div>
@@ -71,16 +78,19 @@
 import { ref } from 'vue'
 import { useConnectionStore } from '../stores/connection'
 import { useBucketStore } from '../stores/bucket'
+import { useSettingsStore } from '../stores/settings'
 
 const connectionStore = useConnectionStore()
 const bucketStore = useBucketStore()
+const settingsStore = useSettingsStore()
 
 const form = ref({
-  endpoint: 'localhost',
-  port: 9000,
-  accessKey: 'xfx',
-  secretKey: 'xfx@12345',
-  useSsl: false
+  endpoint: '192.168.3.92',
+  port: 39000,
+  accessKey: 'minioadmin',
+  secretKey: 'minioadmin',
+  useSsl: false,
+  showDeleteButton: false
 })
 
 const loading = ref(false)
@@ -102,6 +112,11 @@ async function handleTest() {
 async function handleConnect() {
   loading.value = true
   error.value = null
+  
+  // 保存删除按钮显示设置
+  settingsStore.showDeleteButton = form.value.showDeleteButton
+  settingsStore.saveSettings()
+  
   const success = await connectionStore.saveConnection(form.value)
   loading.value = false
   

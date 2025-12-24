@@ -424,10 +424,13 @@ impl TransferManager {
 
         // Download file
         let result = if file_size < PART_SIZE as i64 {
-            self.download_small_file(&task, &bucket, &object_key, &local_path).await?;
+            println!("Starting small file download for task {}: {} bytes", task.task_id, file_size);
+            let bytes_downloaded = self.download_small_file(&task, &bucket, &object_key, &local_path).await?;
+            println!("Small file download completed for task {}: {} bytes", task.task_id, bytes_downloaded);
             // For small files, we already updated the progress in download_small_file
             Ok(())
         } else {
+            println!("Starting large file download for task {}: {} bytes", task.task_id, file_size);
             self.download_large_file(&mut task, &bucket, &object_key, &local_path).await
         };
 
@@ -496,6 +499,7 @@ impl TransferManager {
         
         let db = self.db.lock().await;
         db.save_task(&updated_task)?;
+        println!("Saved task progress to database: {} bytes", updated_task.transferred_bytes);
 
         println!("Download completed for task {}: {} bytes", task.task_id, bytes.len());
 
@@ -517,6 +521,17 @@ impl TransferManager {
 
         println!("Starting large file download for task {}: {} bytes", task.task_id, task.file_size);
 
+        // Check if task is cancelled before starting the loop
+        {
+            let db = self.db.lock().await;
+            if let Some(current_task) = db.get_task(&task.task_id)? {
+                if current_task.status == TaskStatus::Cancelled {
+                    println!("Task {} is cancelled before download loop", task.task_id);
+                    return Err(AppError::Other("Task cancelled".to_string()));
+                }
+            }
+        }
+
         while offset < task.file_size {
             // Check if task is cancelled
             {
@@ -534,21 +549,59 @@ impl TransferManager {
 
             println!("Downloading range {} for task {}", range, task.task_id);
 
-            let result = client
+            println!("About to send range request: {}", range);
+            
+            // 使用预签名URL进行下载
+            let presigned_config = aws_sdk_s3::presigning::PresigningConfig::builder()
+                .expires_in(std::time::Duration::from_secs(3600)) // 1小时过期
+                .build()
+                .map_err(|e| AppError::S3(e.to_string()))?;
+            
+            let presigned_request = client
                 .get_client()
                 .get_object()
                 .bucket(bucket)
                 .key(object_key)
-                .range(range)
+                .range(&range)
+                .presigned(presigned_config)
+                .await
+                .map_err(|e| {
+                    println!("Failed to create presigned URL for range {}: {}", range, e);
+                    AppError::S3(e.to_string())
+                })?;
+            
+            // 使用reqwest库下载预签名URL的内容
+            let http_client = reqwest::Client::builder()
+                .build()
+                .map_err(|e| AppError::Other(e.to_string()))?;
+            
+            let response = http_client
+                .get(presigned_request.uri())
                 .send()
                 .await
-                .map_err(|e| AppError::S3(e.to_string()))?;
+                .map_err(|e| {
+                    println!("HTTP request failed for range {}: {}", range, e);
+                    AppError::Other(e.to_string())
+                })?;
+            
+            if !response.status().is_success() {
+                return Err(AppError::Other(format!("HTTP request failed with status: {}", response.status())));
+            }
+            
+            let bytes = response
+                .bytes()
+                .await
+                .map_err(|e| {
+                    println!("Failed to read response bytes for range {}: {}", range, e);
+                    AppError::Other(e.to_string())
+                })?;
+            
+            println!("Successfully downloaded {} bytes for range {}", bytes.len(), range);
 
-            let data = result.body.collect().await
-                .map_err(|e| AppError::Other(e.to_string()))?;
-
-            let bytes = data.into_bytes();
+            println!("Range request completed for task {}: {}", task.task_id, range);
+            
             file.write_all(&bytes).await?;
+            println!("Wrote {} bytes to file", bytes.len());
 
             task.transferred_bytes += bytes.len() as i64;
             task.updated_at = Utc::now();
@@ -556,10 +609,11 @@ impl TransferManager {
             {
                 let db = self.db.lock().await;
                 db.save_task(task)?;
-                println!("Progress updated for task {}: {}/{} bytes", task.task_id, task.transferred_bytes, task.file_size);
+                println!("Progress updated for task {}: {}/{} bytes ({}%)", task.task_id, task.transferred_bytes, task.file_size, (task.transferred_bytes as f64 / task.file_size as f64 * 100.0) as i32);
             }
 
             offset = end + 1;
+            println!("Updated offset to {}, total file size: {}", offset, task.file_size);
         }
 
         println!("Large file download completed for task {}", task.task_id);

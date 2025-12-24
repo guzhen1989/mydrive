@@ -62,12 +62,28 @@ async function selectBucket(name: string) {
 }
 
 async function handleCreate() {
-  if (!newBucketName.value) return
+  if (!newBucketName.value) {
+    alert('请输入存储桶名称')
+    return
+  }
   
-  const success = await bucketStore.createBucket(newBucketName.value)
-  if (success) {
-    showCreateDialog.value = false
-    newBucketName.value = ''
+  // S3标准要求存储桶名称只能包含小写字母、数字和连字符
+  const bucketNameRegex = /^[a-z0-9][a-z0-9-]{1,61}[a-z0-9]$/;
+  if (!bucketNameRegex.test(newBucketName.value)) {
+    alert('存储桶名称只能包含小写字母、数字和连字符，长度为3-63个字符，且必须以字母或数字开头和结尾')
+    return
+  }
+  
+  try {
+    const success = await bucketStore.createBucket(newBucketName.value)
+    if (success) {
+      showCreateDialog.value = false
+      newBucketName.value = ''
+      alert('存储桶创建成功')
+    }
+  } catch (error) {
+    console.error('创建存储桶失败:', error)
+    alert('创建存储桶失败: ' + (error as Error).message)
   }
 }
 </script>

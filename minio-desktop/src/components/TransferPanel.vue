@@ -125,15 +125,22 @@ onMounted(async () => {
 
 async function loadTasks() {
   try {
-    tasks.value = await api.getTransferTasks()
+    const fetchedTasks = await api.getTransferTasks()
+    console.log('Loaded tasks:', fetchedTasks);
+    tasks.value = fetchedTasks
   } catch (e) {
     console.error('Failed to load tasks:', e)
   }
 }
 
 function getProgress(task: TransferTask): number {
-  if (task.file_size === 0) return 0
-  return Math.round((task.transferred_bytes / task.file_size) * 100)
+  if (task.file_size === 0) {
+    console.log('Task file_size is 0:', task);
+    return 0
+  }
+  const progress = Math.round((task.transferred_bytes / task.file_size) * 100);
+  console.log('Progress calculation:', task.transferred_bytes, '/', task.file_size, '=', progress + '%');
+  return progress;
 }
 
 function getStatusClass(status: string): string {

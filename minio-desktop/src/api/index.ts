@@ -81,8 +81,8 @@ export const api = {
     return invoke('list_objects', { bucket, prefix })
   },
 
-  async uploadFile(local_path: string, bucket: string, object_key: string): Promise<string> {
-    return invoke('upload_file', { local_path, bucket, object_key })
+  async uploadFile(localPath: string, bucket: string, objectKey: string): Promise<string> {
+    return invoke('upload_file', { localPath, bucket, objectKey })
   },
 
   async downloadFile(bucket: string, objectKey: string, localPath: string): Promise<string> {
@@ -98,24 +98,24 @@ export const api = {
     return invoke('get_transfer_tasks')
   },
 
-  async pauseTask(task_id: string): Promise<void> {
-    return invoke('pause_task', { task_id })
+  async pauseTask(taskId: string): Promise<void> {
+    return invoke('pause_task', { taskId })
   },
 
-  async resumeTask(task_id: string): Promise<void> {
-    return invoke('resume_task', { task_id })
+  async resumeTask(taskId: string): Promise<void> {
+    return invoke('resume_task', { taskId })
   },
 
-  async cancelTask(task_id: string): Promise<void> {
-    return invoke('cancel_task', { task_id })
+  async cancelTask(taskId: string): Promise<void> {
+    return invoke('cancel_task', { taskId })
   },
 
   async cancelAllTasks(): Promise<void> {
     return invoke('cancel_all_tasks')
   },
 
-  async deleteTask(task_id: string): Promise<void> {
-    return invoke('delete_task', { task_id })
+  async deleteTask(taskId: string): Promise<void> {
+    return invoke('delete_task', { taskId })
   },
 
   async deleteCompletedTasks(): Promise<void> {
