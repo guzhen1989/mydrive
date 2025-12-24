@@ -85,6 +85,9 @@
 <script setup lang="ts">
 import { ref, computed, onMounted } from 'vue'
 import { invoke } from '@tauri-apps/api/tauri'
+import { useSettingsStore } from '../stores/settings'
+
+const settingsStore = useSettingsStore()
 
 interface EncryptionKey {
   key_id: string
@@ -157,6 +160,12 @@ async function saveKey() {
     })
     
     await loadKey()
+    
+    // 更新settings store中的密钥
+    if (currentKey.value) {
+      settingsStore.encryptionKey = currentKey.value.key_value
+    }
+    
     keyInput.value = ''
     keyValidation.value = null
     alert('密钥保存成功!')

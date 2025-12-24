@@ -1,10 +1,29 @@
-use aws_sdk_s3::{Client, Config, config::Region, config::Credentials, config::Builder as S3ConfigBuilder};
-use aws_config::BehaviorVersion;
+use aws_sdk_s3::{Client, Config, config::Region, config::Credentials, config::Builder as S3ConfigBuilder, config::BehaviorVersion};
+use aws_smithy_runtime::client::http::hyper_014::HyperClientBuilder;
 use aws_sdk_s3::primitives::ByteStream;
 use aws_sdk_s3::config::timeout::TimeoutConfig;
 use std::time::Duration;
 use crate::error::{AppError, Result};
 use crate::models::{ConnectionConfig, BucketInfo, ObjectInfo};
+use rustls::client::{ServerCertVerifier, ServerCertVerified};
+use rustls::{Certificate, ServerName, Error as RustlsError};
+
+// Custom certificate verifier that accepts all certificates (including self-signed)
+struct NoCertificateVerification;
+
+impl ServerCertVerifier for NoCertificateVerification {
+    fn verify_server_cert(
+        &self,
+        _end_entity: &Certificate,
+        _intermediates: &[Certificate],
+        _server_name: &ServerName,
+        _scts: &mut dyn Iterator<Item = &[u8]>,
+        _ocsp_response: &[u8],
+        _now: std::time::SystemTime,
+    ) -> std::result::Result<ServerCertVerified, RustlsError> {
+        Ok(ServerCertVerified::assertion())
+    }
+}
 
 pub struct MinioClient {
     client: Client,
@@ -36,11 +55,27 @@ impl MinioClient {
             .read_timeout(Duration::from_secs(300)) // 5 minutes for read
             .build();
         
+        // Create a custom TLS connector that accepts self-signed certificates
+        let tls_config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_custom_certificate_verifier(std::sync::Arc::new(NoCertificateVerification))
+            .with_no_client_auth();
+        
+        let https_connector = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_tls_config(tls_config)
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .build();
+        
+        let hyper_client = HyperClientBuilder::new().build(https_connector);
+        
         let s3_config_builder = S3ConfigBuilder::new()
             .behavior_version(BehaviorVersion::latest())
             .region(Region::new("us-east-1"))
             .credentials_provider(credentials.clone())
             .timeout_config(timeout_config)
+            .http_client(hyper_client)
             .force_path_style(true); // 强制使用路径样式寻址，这对 MinIO 很重要
         
         let s3_config_builder = if !endpoint_url.is_empty() {

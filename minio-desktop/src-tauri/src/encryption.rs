@@ -2,6 +2,7 @@ use base64::{Engine as _, engine::general_purpose};
 use md5::{Md5, Digest};
 use crate::error::{AppError, Result};
 
+#[derive(Clone)]
 pub struct SseCEncryption {
     key: Vec<u8>,
     key_md5: String,

@@ -26,7 +26,8 @@ pub async fn get_stream_url(
         println!("Creating new stream server on port 8080");
         let server = crate::streaming::StreamServer::new(
             8080,
-            state.minio_client.clone()
+            state.minio_client.clone(),
+            state.db.clone()
         ).await;
         *server_guard = Some(server);
         println!("Stream server created successfully");

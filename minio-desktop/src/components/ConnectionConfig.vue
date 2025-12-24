@@ -89,7 +89,7 @@ const form = ref({
   port: 39000,
   accessKey: 'minioadmin',
   secretKey: 'minioadmin',
-  useSsl: false,
+  useSsl: true,
   showDeleteButton: false
 })
 

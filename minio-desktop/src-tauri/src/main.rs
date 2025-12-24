@@ -22,6 +22,12 @@ pub struct AppState {
 }
 
 fn main() {
+    // 设置环境变量以允许自签名SSL证书
+    std::env::set_var("RUST_LOG", "warn");
+    
+    // 对于自签名SSL证书，可能需要设置这个环境变量
+    std::env::set_var("AWS_SDK_IMDS_DISABLED", "true");
+    
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::connection::test_connection,
@@ -36,6 +42,7 @@ fn main() {
             commands::object::download_file,
             commands::object::delete_object,
             commands::object::get_presigned_url,
+            commands::object::get_object_data,
             commands::transfer::get_transfer_tasks,
             commands::transfer::pause_task,
             commands::transfer::resume_task,
@@ -47,6 +54,7 @@ fn main() {
             commands::encryption::generate_encryption_key,
             commands::encryption::save_encryption_key,
             commands::encryption::get_encryption_key,
+            commands::encryption::set_encryption_enabled,
             commands::encryption::validate_encryption_key,
         ])
         .setup(|app| {

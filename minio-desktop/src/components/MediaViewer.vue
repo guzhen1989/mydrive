@@ -15,8 +15,8 @@
           v-else-if="isVideo && videoUrl"
           :src="videoUrl"
           controls
-          autoplay
           playsinline
+          preload="metadata"
           @error="onVideoError"
           @canplay="onVideoCanPlay"
           @loadedmetadata="onVideoMetadataLoaded"
@@ -106,7 +106,13 @@ async function playPrevious() {
     try {
       // Update the current object key and load the previous image
       currentVideoIndex.value = prevIndex;
-      imageUrl.value = await api.getPresignedUrl(props.bucket, prevImageKey);
+      
+      // Use getObjectData to avoid certificate issues
+      const imageData = await api.getObjectData(props.bucket, prevImageKey)
+      const ext = prevImageKey.split('.').pop()?.toLowerCase() || 'jpg'
+      const mimeType = getMimeType(ext)
+      const blob = new Blob([imageData], { type: mimeType })
+      imageUrl.value = URL.createObjectURL(blob)
       console.log('Playing previous image:', prevImageKey);
       
       // Update the fileName to match the new image
@@ -132,21 +138,73 @@ watch(() => props.visible, async (newVal) => {
   }
 })
 
+// Helper function to get correct MIME type
+function getMimeType(extension: string): string {
+  const mimeTypes: Record<string, string> = {
+    'jpg': 'image/jpeg',
+    'jpeg': 'image/jpeg',
+    'png': 'image/png',
+    'gif': 'image/gif',
+    'webp': 'image/webp',
+    'bmp': 'image/bmp',
+    'svg': 'image/svg+xml'
+  }
+  return mimeTypes[extension] || `image/${extension}`
+}
+
 async function loadMedia() {
   loading.value = true
   try {
     console.log('Loading media:', props.fileName, 'Type:', isVideo.value ? 'video' : 'image')
     if (isVideo.value) {
-      // Get presigned URL for video (using the same method as MinIO browser)
-      videoUrl.value = await api.getPresignedUrl(props.bucket, props.objectKey)
-      console.log('Video presigned URL:', videoUrl.value)
+      // For small videos, try using Blob URL similar to images
+      console.log('Fetching video data...')
+      const streamUrl = await api.getStreamUrl(props.bucket, props.objectKey)
+      console.log('Stream URL obtained:', streamUrl)
+      
+      // Fetch the video data
+      const response = await fetch(streamUrl)
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`)
+      }
+      
+      console.log('Response headers:', {
+        contentType: response.headers.get('content-type'),
+        contentLength: response.headers.get('content-length')
+      })
+      
+      const blob = await response.blob()
+      console.log('Video blob created, size:', blob.size, 'type:', blob.type)
+      
+      // Create blob URL
+      videoUrl.value = URL.createObjectURL(blob)
+      console.log('Video blob URL created:', videoUrl.value)
       
       // Load video list for next button functionality
       await loadVideoList()
     } else if (isImage.value) {
-      // For images, we could also use presigned URL
-      imageUrl.value = await api.getPresignedUrl(props.bucket, props.objectKey)
-      console.log('Image presigned URL:', imageUrl.value)
+      // For images, use getObjectData to avoid certificate issues
+      const imageData = await api.getObjectData(props.bucket, props.objectKey)
+      console.log('Image data loaded:')
+      console.log('  - Type:', Object.prototype.toString.call(imageData))
+      console.log('  - Is Array:', Array.isArray(imageData))
+      console.log('  - Is Uint8Array:', imageData instanceof Uint8Array)
+      console.log('  - Length/byteLength:', imageData.length || imageData.byteLength)
+      console.log('  - First 10 bytes:', imageData.slice(0, 10))
+      console.log('File extension:', fileExtension.value)
+      
+      const mimeType = getMimeType(fileExtension.value)
+      console.log('Using MIME type:', mimeType)
+      
+      // Convert to Uint8Array if it's a regular array
+      const uint8Data = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData)
+      console.log('Uint8Array length:', uint8Data.length)
+      
+      const blob = new Blob([uint8Data], { type: mimeType })
+      console.log('Blob created, size:', blob.size, 'type:', blob.type)
+      
+      imageUrl.value = URL.createObjectURL(blob)
+      console.log('Image blob URL created:', imageUrl.value)
       
       // Load image list for next button functionality
       await loadImageList()
@@ -393,26 +451,30 @@ async function playNext() {
       currentVideoIndex.value = nextIndex;
       
       if (isVideo.value) {
-        // For videos
-        videoUrl.value = await api.getPresignedUrl(props.bucket, nextKey);
-        console.log('Playing next video:', nextKey);
+        // For videos, use stream URL
+        videoUrl.value = await api.getStreamUrl(props.bucket, nextKey)
+        console.log('Playing next video:', nextKey)
         
         // We need to update the video source and reload
-        const videoElement = document.querySelector('video') as HTMLVideoElement;
+        const videoElement = document.querySelector('video') as HTMLVideoElement
         if (videoElement) {
-          videoElement.src = videoUrl.value;
-          videoElement.load();
-          videoElement.play();
+          videoElement.src = videoUrl.value
+          videoElement.load()
+          videoElement.play()
         }
       } else if (isImage.value) {
-        // For images
-        imageUrl.value = await api.getPresignedUrl(props.bucket, nextKey);
-        console.log('Loading next image:', nextKey);
+        // For images, use getObjectData to avoid certificate issues
+        const imageData = await api.getObjectData(props.bucket, nextKey)
+        const ext = nextKey.split('.').pop()?.toLowerCase() || 'jpg'
+        const mimeType = getMimeType(ext)
+        const blob = new Blob([imageData], { type: mimeType })
+        imageUrl.value = URL.createObjectURL(blob)
+        console.log('Loading next image:', nextKey)
         
         // We need to update the image source
-        const imgElement = document.querySelector('img') as HTMLImageElement;
+        const imgElement = document.querySelector('img') as HTMLImageElement
         if (imgElement) {
-          imgElement.src = imageUrl.value;
+          imgElement.src = imageUrl.value
         }
       }
     } catch (error) {
@@ -464,6 +526,13 @@ function handleFullscreenChange() {
 }
 
 function cleanup() {
+  // Revoke blob URLs to free memory
+  if (imageUrl.value && imageUrl.value.startsWith('blob:')) {
+    URL.revokeObjectURL(imageUrl.value)
+  }
+  if (videoUrl.value && videoUrl.value.startsWith('blob:')) {
+    URL.revokeObjectURL(videoUrl.value)
+  }
   imageUrl.value = ''
   videoUrl.value = ''
 }
@@ -503,10 +572,35 @@ function onVideoError(event: Event) {
   console.error('Video failed to load:', event)
   console.error('Video error details:', {
     error: videoElement.error,
+    errorCode: videoElement.error?.code,
+    errorMessage: videoElement.error?.message,
     networkState: videoElement.networkState,
     readyState: videoElement.readyState,
-    src: videoElement.src
+    src: videoElement.src,
+    currentSrc: videoElement.currentSrc
   })
+  
+  // Try to fetch the URL directly to see what's wrong
+  if (videoUrl.value) {
+    console.log('Attempting direct fetch to diagnose issue...')
+    fetch(videoUrl.value)
+      .then(response => {
+        console.log('Fetch response:', {
+          status: response.status,
+          statusText: response.statusText,
+          contentType: response.headers.get('content-type'),
+          contentLength: response.headers.get('content-length')
+        })
+        return response.text()
+      })
+      .then(text => {
+        console.log('Response body preview:', text.substring(0, 200))
+      })
+      .catch(err => {
+        console.error('Fetch failed:', err)
+      })
+  }
+  
   alert('视频加载失败，请检查连接或稍后重试')
 }
 

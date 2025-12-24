@@ -322,7 +322,7 @@ impl Database {
     pub fn get_encryption_key(&self) -> Result<Option<EncryptionKey>> {
         let mut stmt = self.conn.prepare(
             "SELECT key_id, key_value, key_md5, enabled, created_at 
-             FROM encryption_keys WHERE enabled = 1 LIMIT 1"
+             FROM encryption_keys ORDER BY created_at DESC LIMIT 1"
         )?;
         
         let result = stmt.query_row([], |row| {
@@ -342,5 +342,14 @@ impl Database {
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
             Err(e) => Err(e.into()),
         }
+    }
+    
+    pub fn set_encryption_enabled(&self, enabled: bool) -> Result<()> {
+        // Update all encryption keys to have the new enabled status
+        self.conn.execute(
+            "UPDATE encryption_keys SET enabled = ?1",
+            params![enabled as i32],
+        )?;
+        Ok(())
     }
 }

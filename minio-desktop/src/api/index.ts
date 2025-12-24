@@ -81,8 +81,20 @@ export const api = {
     return invoke('list_objects', { bucket, prefix })
   },
 
-  async uploadFile(localPath: string, bucket: string, objectKey: string): Promise<string> {
-    return invoke('upload_file', { localPath, bucket, objectKey })
+  async uploadFile(
+    localPath: string, 
+    bucket: string, 
+    objectKey: string,
+    useEncryption?: boolean,
+    encryptionKey?: string
+  ): Promise<string> {
+    return invoke('upload_file', { 
+      localPath, 
+      bucket, 
+      objectKey,
+      useEncryption,
+      encryptionKey
+    })
   },
 
   async downloadFile(bucket: string, objectKey: string, localPath: string): Promise<string> {
@@ -129,5 +141,9 @@ export const api = {
 
   async getPresignedUrl(bucket: string, objectKey: string, expiresInSeconds?: number): Promise<string> {
     return invoke('get_presigned_url', { bucket, objectKey, expiresInSeconds })
+  },
+
+  async getObjectData(bucket: string, objectKey: string): Promise<Uint8Array> {
+    return invoke('get_object_data', { bucket, objectKey })
   }
 }

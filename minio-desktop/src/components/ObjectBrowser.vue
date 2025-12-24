@@ -9,7 +9,20 @@
         </template>
       </div>
       <div class="actions">
-        <button @click="handleUpload" class="upload-btn">上传</button>
+        <div class="upload-dropdown">
+          <button @click="toggleUploadMenu" class="upload-btn">
+            上传 ▼
+          </button>
+          <div v-if="showUploadMenu" class="upload-menu">
+            <div @click="handleUploadFiles" class="menu-item">上传文件</div>
+            <div @click="handleUploadFolder" class="menu-item">上传文件夹</div>
+            <div class="menu-divider"></div>
+            <div @click="toggleEncryption" class="menu-item encryption-toggle">
+              <span>🔒 {{ settingsStore.enableEncryption ? '禁用加密' : '启用加密' }}</span>
+              <span v-if="settingsStore.enableEncryption" class="enabled-badge">✓</span>
+            </div>
+          </div>
+        </div>
         <button @click="refresh">刷新</button>
       </div>
     </div>
@@ -52,7 +65,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, watch, ref } from 'vue'
+import { computed, watch, ref, onMounted, onUnmounted } from 'vue'
 import { storeToRefs } from 'pinia'
 import { useBucketStore } from '../stores/bucket'
 import { useObjectStore } from '../stores/object'
@@ -69,6 +82,7 @@ const { objects, currentPrefix, loading } = storeToRefs(objectStore)
 
 const showMediaViewer = ref(false)
 const selectedObject = ref<ObjectInfo | null>(null)
+const showUploadMenu = ref(false)
 
 const pathParts = computed(() => {
   if (!currentPrefix.value) return []
@@ -199,14 +213,68 @@ async function handleDeleteWithoutConfirm(obj: ObjectInfo) {
 
 
 
-async function handleUpload() {
+function toggleUploadMenu() {
+  showUploadMenu.value = !showUploadMenu.value
+}
+
+async function toggleEncryption() {
   try {
-    // 使用系统文件选择对话框，允许选择文件和文件夹
+    if (!settingsStore.enableEncryption) {
+      // 尝试启用加密，首先检查是否有密钥
+      const { invoke } = await import('@tauri-apps/api/tauri')
+      const encryptionKey = await invoke('get_encryption_key')
+      
+      if (!encryptionKey || !(encryptionKey as any).key_value) {
+        alert('请先在加密设置中配置加密密钥')
+        showUploadMenu.value = false
+        return
+      }
+    }
+    
+    // 使用 store 的 toggle 方法来切换加密状态
+    await settingsStore.toggleEncryption()
+    showUploadMenu.value = false
+  } catch (error) {
+    console.error('Failed to toggle encryption:', error)
+    alert('切换加密状态失败: ' + error)
+    showUploadMenu.value = false
+  }
+}
+
+// 点击外部关闭菜单
+function handleClickOutside(event: MouseEvent) {
+  const target = event.target as HTMLElement
+  if (!target.closest('.upload-dropdown')) {
+    showUploadMenu.value = false
+  }
+}
+
+onMounted(() => {
+  document.addEventListener('click', handleClickOutside)
+})
+
+onUnmounted(() => {
+  document.removeEventListener('click', handleClickOutside)
+})
+
+async function handleUploadFiles() {
+  showUploadMenu.value = false
+  await performUpload(false)
+}
+
+async function handleUploadFolder() {
+  showUploadMenu.value = false
+  await performUpload(true)
+}
+
+async function performUpload(isDirectory: boolean) {
+  try {
+    // 使用系统文件选择对话框
     const selected = await import('@tauri-apps/api/dialog').then(dialog => 
       dialog.open({
-        title: '选择文件或文件夹上传',
-        multiple: true, // 允许选择多个文件或文件夹
-        directory: true // 允许选择文件夹
+        title: isDirectory ? '选择文件夹上传' : '选择文件上传',
+        multiple: true, // 允许选择多个
+        directory: isDirectory // 根据用户选择决定是否只能选择文件夹
       })
     );
     
@@ -215,7 +283,7 @@ async function handleUpload() {
       
       for (const path of paths) {
         // 检查路径是否为文件夹
-        if (await isDirectory(path)) {
+        if (await checkIsDirectory(path)) {
           // 如果是文件夹，递归上传文件夹内容
           await uploadFolder(path);
         } else {
@@ -225,7 +293,13 @@ async function handleUpload() {
           
           try {
             // 调用API上传文件
-            const taskId = await api.uploadFile(path, currentBucket.value!, objectKey);
+            const taskId = await api.uploadFile(
+              path, 
+              currentBucket.value!, 
+              objectKey,
+              settingsStore.enableEncryption,
+              settingsStore.enableEncryption ? settingsStore.encryptionKey : undefined
+            );
             console.log('上传任务已启动，任务ID:', taskId);
             
             // 等待上传完成，定期检查任务状态
@@ -249,7 +323,7 @@ async function handleUpload() {
 }
 
 // 检查路径是否为文件夹
-async function isDirectory(path: string): Promise<boolean> {
+async function checkIsDirectory(path: string): Promise<boolean> {
   try {
     // 尝试导入fs插件检查路径类型
     const { readDir } = await import('@tauri-apps/api/fs');
@@ -283,7 +357,13 @@ async function uploadFolder(folderPath: string) {
         const fullObjectKey = currentPrefix.value ? `${currentPrefix.value}${relativePath}` : relativePath;
         
         try {
-          const taskId = await api.uploadFile(entry.path, currentBucket.value!, fullObjectKey);
+          const taskId = await api.uploadFile(
+            entry.path, 
+            currentBucket.value!, 
+            fullObjectKey,
+            settingsStore.enableEncryption,
+            settingsStore.enableEncryption ? settingsStore.encryptionKey : undefined
+          );
           console.log('上传任务已启动，任务ID:', taskId, '路径:', fullObjectKey);
           
           // 等待上传完成，定期检查任务状态
@@ -431,10 +511,83 @@ function refresh() {
   background-color: #45a049;
 }
 
+.upload-dropdown {
+  position: relative;
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.upload-menu {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  background-color: white;
+  border: 1px solid #ddd;
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+  z-index: 1000;
+  min-width: 120px;
+  margin-top: 4px;
+}
+
+.menu-item {
+  padding: 8px 16px;
+  cursor: pointer;
+  transition: background-color 0.2s;
+  white-space: nowrap;
+}
+
+.menu-item:hover {
+  background-color: #f5f5f5;
+}
+
+.menu-item:first-child {
+  border-radius: 4px 4px 0 0;
+}
+
+.menu-item:last-child {
+  border-radius: 0 0 4px 4px;
+}
+
+.menu-divider {
+  height: 1px;
+  background-color: #e0e0e0;
+  margin: 4px 0;
+}
+
+.encryption-toggle {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.enabled-badge {
+  color: #4CAF50;
+  font-weight: bold;
+  font-size: 16px;
+}
+
 @media (prefers-color-scheme: dark) {
   .upload-btn {
     background-color: #4CAF50;
     border-color: #4CAF50;
+  }
+  
+  .upload-menu {
+    background-color: #2a2a2a;
+    border-color: #444;
+  }
+  
+  .menu-item {
+    color: #fff;
+  }
+  
+  .menu-item:hover {
+    background-color: #333;
+  }
+  
+  .menu-divider {
+    background-color: #444;
   }
 }
 

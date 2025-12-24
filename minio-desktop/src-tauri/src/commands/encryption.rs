@@ -48,6 +48,15 @@ pub async fn get_encryption_key(
 }
 
 #[tauri::command]
+pub async fn set_encryption_enabled(
+    state: State<'_, AppState>,
+    enabled: bool,
+) -> Result<()> {
+    let db = state.db.lock().await;
+    db.set_encryption_enabled(enabled)
+}
+
+#[tauri::command]
 pub async fn validate_encryption_key(key_base64: String) -> Result<bool> {
     match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &key_base64) {
         Ok(key) => {

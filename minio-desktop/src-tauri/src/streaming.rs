@@ -16,21 +16,24 @@ use tokio::sync::Mutex;
 use tokio_util::io::ReaderStream;
 use crate::models::StreamToken;
 use crate::minio::MinioClient;
+use crate::db::Database;
 
 pub struct StreamServer {
     port: u16,
     tokens: Arc<Mutex<HashMap<String, StreamToken>>>,
     minio_client: Arc<Mutex<Option<MinioClient>>>,
+    db: Arc<Mutex<Database>>,
 }
 
 impl StreamServer {
-    pub async fn new(port: u16, minio_client: Arc<Mutex<Option<MinioClient>>>) -> Self {
+    pub async fn new(port: u16, minio_client: Arc<Mutex<Option<MinioClient>>>, db: Arc<Mutex<Database>>) -> Self {
         let tokens = Arc::new(Mutex::new(HashMap::new()));
         
         let server = StreamServer {
             port,
             tokens: tokens.clone(),
             minio_client: minio_client.clone(),
+            db: db.clone(),
         };
         
         println!("Starting stream server on port {}", port);
@@ -39,6 +42,7 @@ impl StreamServer {
         let app_state = AppState {
             tokens,
             minio_client,
+            db,
         };
         
         tokio::spawn(async move {
@@ -103,6 +107,7 @@ impl StreamServer {
 struct AppState {
     tokens: Arc<Mutex<HashMap<String, StreamToken>>>,
     minio_client: Arc<Mutex<Option<MinioClient>>>,
+    db: Arc<Mutex<Database>>,
 }
 
 // Handler for stream requests
@@ -146,6 +151,27 @@ async fn stream_handler(
         }
     };
 
+    // Try to get encryption key from database
+    let encryption_key = {
+        let db = state.db.lock().await;
+        match db.get_encryption_key() {
+            Ok(key) => key,
+            Err(e) => {
+                println!("Failed to get encryption key: {:?}", e);
+                None
+            }
+        }
+    };
+    
+    if let Some(ref key) = encryption_key {
+        println!("Encryption key found, enabled: {}", key.enabled);
+        if !key.enabled {
+            println!("WARNING: Encryption is disabled but key exists - will NOT add SSE-C headers");
+        }
+    } else {
+        println!("No encryption key configured");
+    }
+
     // Parse Range header
     let range_header = headers.get(header::RANGE).and_then(|v| v.to_str().ok());
     if let Some(range) = range_header {
@@ -158,6 +184,33 @@ async fn stream_handler(
         .get_object()
         .bucket(&stream_token.bucket)
         .key(&stream_token.object_key);
+
+    // Add SSE-C headers if encryption key exists
+    if let Some(ref key) = encryption_key {
+        if key.enabled {
+            println!("Adding SSE-C headers to stream request");
+            use crate::encryption::SseCEncryption;
+            match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, &key.key_value) {
+                Ok(key_bytes) => {
+                    match SseCEncryption::new(key_bytes) {
+                        Ok(sse_c) => {
+                            request = request
+                                .sse_customer_algorithm(sse_c.get_algorithm())
+                                .sse_customer_key(sse_c.get_key_base64())
+                                .sse_customer_key_md5(sse_c.get_key_md5());
+                            println!("SSE-C headers added successfully");
+                        }
+                        Err(e) => {
+                            println!("Failed to create SSE-C encryption: {:?}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("Failed to decode encryption key: {:?}", e);
+                }
+            }
+        }
+    }
 
     if let Some(range) = range_header {
         println!("Requesting range: {}", range);
@@ -183,40 +236,53 @@ async fn stream_handler(
     let content_length = result.content_length().unwrap_or(0);
     println!("Content length: {}", content_length);
     
-    // Try to get content type from MinIO, default to video/mp4 for .mp4 files
+    // Try to get content type from MinIO, but prefer inferring from file extension
     let minio_content_type = result.content_type();
     println!("MinIO content type: {:?}", minio_content_type);
     
-    let content_type = if let Some(ct) = minio_content_type {
-        ct.to_string()
+    // Always infer content type from file extension for better compatibility
+    let content_type = if object_key.to_lowercase().ends_with(".mp4") {
+        "video/mp4".to_string()
+    } else if object_key.to_lowercase().ends_with(".avi") {
+        "video/x-msvideo".to_string()
+    } else if object_key.to_lowercase().ends_with(".mov") {
+        "video/quicktime".to_string()
+    } else if object_key.to_lowercase().ends_with(".wmv") {
+        "video/x-ms-wmv".to_string()
+    } else if object_key.to_lowercase().ends_with(".flv") {
+        "video/x-flv".to_string()
+    } else if object_key.to_lowercase().ends_with(".webm") {
+        "video/webm".to_string()
+    } else if object_key.to_lowercase().ends_with(".mkv") {
+        "video/x-matroska".to_string()
+    } else if object_key.to_lowercase().ends_with(".m4v") {
+        "video/x-m4v".to_string()
+    } else if object_key.to_lowercase().ends_with(".ogg") {
+        "video/ogg".to_string()
     } else {
-        // Infer content type from object key
-        if object_key.to_lowercase().ends_with(".mp4") {
-            "video/mp4".to_string()
-        } else if object_key.to_lowercase().ends_with(".avi") {
-            "video/x-msvideo".to_string()
-        } else if object_key.to_lowercase().ends_with(".mov") {
-            "video/quicktime".to_string()
-        } else if object_key.to_lowercase().ends_with(".wmv") {
-            "video/x-ms-wmv".to_string()
-        } else if object_key.to_lowercase().ends_with(".flv") {
-            "video/x-flv".to_string()
-        } else if object_key.to_lowercase().ends_with(".webm") {
-            "video/webm".to_string()
-        } else if object_key.to_lowercase().ends_with(".mkv") {
-            "video/x-matroska".to_string()
-        } else if object_key.to_lowercase().ends_with(".m4v") {
-            "video/x-m4v".to_string()
-        } else {
-            "application/octet-stream".to_string()
-        }
+        // Fall back to MinIO's content type if available
+        minio_content_type.map(|s| s.to_string()).unwrap_or_else(|| "application/octet-stream".to_string())
     };
     
     println!("Final content type: {}", content_type);
     
     // Check if content length is too small for a video file
     if content_type.starts_with("video/") && content_length < 1000 {
-        println!("Warning: Video file is suspiciously small ({} bytes), might be a corrupted or incomplete file", content_length);
+        println!("ERROR: Video file is suspiciously small ({} bytes)!", content_length);
+        println!("This usually means:");
+        println!("  1. File upload was incomplete or failed");
+        println!("  2. Encryption mismatch: file was uploaded without encryption but trying to decrypt");
+        println!("  3. Encryption mismatch: file was uploaded with encryption but trying to read without decryption");
+        println!("Suggestion: Check upload task status and re-upload the file");
+        
+        // Try to detect encryption mismatch
+        if let Some(ref key) = encryption_key {
+            if key.enabled {
+                println!("Currently trying to decrypt with SSE-C. If file was uploaded WITHOUT encryption, this will fail.");
+            }
+        } else {
+            println!("Currently NOT using SSE-C decryption. If file was uploaded WITH encryption, this will fail.");
+        }
     }
     
     // Create a stream from the response body

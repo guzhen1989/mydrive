@@ -31,6 +31,8 @@ impl TransferManager {
         local_path: String,
         bucket: String,
         object_key: String,
+        use_encryption: bool,
+        encryption_key: Option<String>,
     ) -> Result<()> {
         let file_metadata = tokio::fs::metadata(&local_path).await?;
         let file_size = file_metadata.len() as i64;
@@ -55,7 +57,7 @@ impl TransferManager {
             transferred_bytes: 0,
             status: TaskStatus::Running,
             error_message: None,
-            use_encryption: false,
+            use_encryption,
             created_at: Utc::now(),
             updated_at: Utc::now(),
             completed_at: None,
@@ -69,9 +71,9 @@ impl TransferManager {
 
         // Perform upload
         let result = if file_size < PART_SIZE as i64 {
-            self.upload_small_file(&task, &local_path, &bucket, &object_key).await
+            self.upload_small_file(&task, &local_path, &bucket, &object_key, encryption_key.as_deref()).await
         } else {
-            self.upload_large_file(&mut task, &local_path, &bucket, &object_key).await
+            self.upload_large_file(&mut task, &local_path, &bucket, &object_key, encryption_key.as_deref()).await
         };
 
         // Update task status
@@ -101,6 +103,7 @@ impl TransferManager {
         local_path: &str,
         bucket: &str,
         object_key: &str,
+        encryption_key: Option<&str>,
     ) -> Result<()> {
         let client_guard = self.minio_client.lock().await;
         let client = client_guard.as_ref().ok_or(AppError::NotConnected)?;
@@ -109,12 +112,27 @@ impl TransferManager {
             .await
             .map_err(|e| AppError::Io(std::io::Error::new(std::io::ErrorKind::Other, e)))?;
 
-        client
+        let mut put_request = client
             .get_client()
             .put_object()
             .bucket(bucket)
             .key(object_key)
-            .body(body)
+            .body(body);
+        
+        // Add SSE-C headers if encryption is enabled
+        if let Some(key_base64) = encryption_key {
+            use crate::encryption::SseCEncryption;
+            let key_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key_base64)
+                .map_err(|e| AppError::Encryption(e.to_string()))?;
+            let sse_c = SseCEncryption::new(key_bytes)?;
+            
+            put_request = put_request
+                .sse_customer_algorithm(sse_c.get_algorithm())
+                .sse_customer_key(sse_c.get_key_base64())
+                .sse_customer_key_md5(sse_c.get_key_md5());
+        }
+        
+        put_request
             .send()
             .await
             .map_err(|e| AppError::S3(e.to_string()))?;
@@ -129,19 +147,61 @@ impl TransferManager {
         local_path: &str,
         bucket: &str,
         object_key: &str,
+        encryption_key: Option<&str>,
     ) -> Result<()> {
         let client_guard = self.minio_client.lock().await;
         let client = client_guard.as_ref().ok_or(AppError::NotConnected)?;
 
+        // Prepare SSE-C encryption if enabled
+        let sse_c = if let Some(key_base64) = encryption_key {
+            use crate::encryption::SseCEncryption;
+            let key_bytes = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, key_base64)
+                .map_err(|e| AppError::Encryption(e.to_string()))?;
+            Some(SseCEncryption::new(key_bytes)?)
+        } else {
+            None
+        };
+
         // Initiate multipart upload
-        let multipart_upload = client
+        let mut multipart_request = client
             .get_client()
             .create_multipart_upload()
             .bucket(bucket)
-            .key(object_key)
+            .key(object_key);
+        
+        // Try to set content type based on file extension
+        let content_type = if object_key.to_lowercase().ends_with(".mp4") {
+            Some("video/mp4")
+        } else if object_key.to_lowercase().ends_with(".jpg") || object_key.to_lowercase().ends_with(".jpeg") {
+            Some("image/jpeg")
+        } else if object_key.to_lowercase().ends_with(".png") {
+            Some("image/png")
+        } else {
+            None
+        };
+        
+        if let Some(ct) = content_type {
+            println!("[upload_large_file] Setting content-type: {}", ct);
+            multipart_request = multipart_request.content_type(ct);
+        }
+        
+        // Add SSE-C headers if encryption is enabled
+        if let Some(ref encryption) = sse_c {
+            println!("[upload_large_file] Adding SSE-C headers to multipart upload");
+            multipart_request = multipart_request
+                .sse_customer_algorithm(encryption.get_algorithm())
+                .sse_customer_key(encryption.get_key_base64())
+                .sse_customer_key_md5(encryption.get_key_md5());
+        }
+        
+        println!("[upload_large_file] Initiating multipart upload for {}/{}", bucket, object_key);
+        let multipart_upload = multipart_request
             .send()
             .await
-            .map_err(|e| AppError::S3(e.to_string()))?;
+            .map_err(|e| {
+                eprintln!("[upload_large_file] Failed to initiate multipart upload: {:?}", e);
+                AppError::S3(format!("Failed to initiate multipart upload: {}", e))
+            })?;
 
         let upload_id = multipart_upload
             .upload_id()
@@ -161,16 +221,34 @@ impl TransferManager {
         let mut part_number = 1;
         let mut completed_parts = Vec::new();
         let semaphore = Arc::new(Semaphore::new(MAX_CONCURRENT_PARTS));
+        let file_size = file.metadata().await?.len();
+
+        println!("[upload_large_file] File size: {} bytes, will upload {} parts", file_size, task.total_parts);
 
         loop {
             let mut buffer = vec![0u8; PART_SIZE];
-            let bytes_read = file.read(&mut buffer).await?;
+            let mut total_read = 0;
             
-            if bytes_read == 0 {
+            // Keep reading until we fill the buffer or reach EOF
+            while total_read < PART_SIZE {
+                let bytes_read = file.read(&mut buffer[total_read..]).await?;
+                
+                if bytes_read == 0 {
+                    // EOF reached
+                    break;
+                }
+                
+                total_read += bytes_read;
+            }
+            
+            if total_read == 0 {
+                // No more data to read
                 break;
             }
 
-            buffer.truncate(bytes_read);
+            buffer.truncate(total_read);
+            
+            println!("[upload_large_file] Uploading part {}/{} ({} bytes)", part_number, task.total_parts, total_read);
             
             let permit = semaphore.clone().acquire_owned().await.unwrap();
             let client_clone = client.get_client().clone();
@@ -178,37 +256,60 @@ impl TransferManager {
             let key_clone = object_key.to_string();
             let upload_id_clone = upload_id.clone();
             let part_num = part_number;
+            let encryption_clone = sse_c.clone();
+            let bytes_count = total_read;
 
             let upload_result = tokio::spawn(async move {
                 let _permit = permit;
-                let result = client_clone
+                
+                let mut upload_part_request = client_clone
                     .upload_part()
                     .bucket(&bucket_clone)
                     .key(&key_clone)
                     .upload_id(&upload_id_clone)
                     .part_number(part_num)
-                    .body(ByteStream::from(buffer))
-                    .send()
-                    .await;
+                    .body(ByteStream::from(buffer));
+                
+                // Add SSE-C headers if encryption is enabled
+                if let Some(ref encryption) = encryption_clone {
+                    upload_part_request = upload_part_request
+                        .sse_customer_algorithm(encryption.get_algorithm())
+                        .sse_customer_key(encryption.get_key_base64())
+                        .sse_customer_key_md5(encryption.get_key_md5());
+                }
+                
+                let result = upload_part_request.send().await;
+                
+                if let Err(ref e) = result {
+                    eprintln!("[upload_large_file] Part {} upload failed: {:?}", part_num, e);
+                }
                 
                 result.map(|output| (part_num, output.e_tag().unwrap_or("").to_string()))
             })
             .await
-            .map_err(|e| AppError::Other(e.to_string()))?
-            .map_err(|e| AppError::S3(e.to_string()))?;
+            .map_err(|e| {
+                eprintln!("[upload_large_file] Tokio join error: {:?}", e);
+                AppError::Other(e.to_string())
+            })?
+            .map_err(|e| {
+                eprintln!("[upload_large_file] S3 upload part error: {:?}", e);
+                AppError::S3(format!("Part upload failed: {}", e))
+            })?;
 
             completed_parts.push(CompletedPart::builder()
                 .part_number(upload_result.0)
                 .e_tag(upload_result.1.clone())
                 .build());
 
+            println!("[upload_large_file] Part {} uploaded successfully, etag: {}", upload_result.0, upload_result.1);
+
             // Update task progress
             task.completed_parts.push(ModelCompletedPart {
                 part_number: upload_result.0,
                 etag: upload_result.1,
-                size: bytes_read as i64,
+                size: bytes_count as i64,
             });
-            task.transferred_bytes += bytes_read as i64;
+            task.transferred_bytes += bytes_count as i64;
             task.updated_at = Utc::now();
 
             {
@@ -219,11 +320,16 @@ impl TransferManager {
             part_number += 1;
         }
 
+        // Sort completed parts by part number before completing upload
+        completed_parts.sort_by_key(|p| p.part_number);
+        
         // Complete multipart upload
         let completed_upload = CompletedMultipartUpload::builder()
             .set_parts(Some(completed_parts))
             .build();
 
+        println!("[upload_large_file] Completing multipart upload with {} parts", task.completed_parts.len());
+        println!("[upload_large_file] Parts: {:?}", task.completed_parts.iter().map(|p| format!("{}:{}", p.part_number, p.size)).collect::<Vec<_>>());
         client
             .get_client()
             .complete_multipart_upload()
@@ -233,8 +339,12 @@ impl TransferManager {
             .multipart_upload(completed_upload)
             .send()
             .await
-            .map_err(|e| AppError::S3(e.to_string()))?;
+            .map_err(|e| {
+                eprintln!("[upload_large_file] Failed to complete multipart upload: {:?}", e);
+                AppError::S3(format!("Failed to complete multipart upload: {}", e))
+            })?;
 
+        println!("[upload_large_file] Multipart upload completed successfully");
         Ok(())
     }
 
@@ -572,6 +682,7 @@ impl TransferManager {
             
             // 使用reqwest库下载预签名URL的内容
             let http_client = reqwest::Client::builder()
+                .danger_accept_invalid_certs(true) // 接受自签名证书
                 .build()
                 .map_err(|e| AppError::Other(e.to_string()))?;
             
