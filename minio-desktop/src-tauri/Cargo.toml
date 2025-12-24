@@ -1,0 +1,39 @@
+[package]
+name = "minio-desktop"
+version = "0.1.0"
+description = "MinIO Desktop Client"
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+
+[build-dependencies]
+tauri-build = { version = "1.5", features = [] }
+
+[dependencies]
+tauri = { version = "1.5", features = [ "window-show", "window-set-focus", "window-set-fullscreen", "window-hide", "window-set-size", "window-minimize", "window-set-title", "window-set-position", "window-maximize", "window-close", "path-all", "fs-all", "dialog-all", "shell-open"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+aws-sdk-s3 = "1.11"
+aws-config = "1.1"
+aws-credential-types = "1.1"
+rusqlite = { version = "0.30", features = ["bundled"] }
+uuid = { version = "1.6", features = ["v4", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+axum = "0.7"
+tower = "0.4"
+tower-http = { version = "0.5", features = ["cors", "fs"] }
+md-5 = "0.10"
+base64 = "0.21"
+tokio-util = { version = "0.7", features = ["io"] }
+thiserror = "1.0"
+anyhow = "1.0"
+rand = "0.8"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2.9"

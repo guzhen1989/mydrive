@@ -1,0 +1,67 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist",
+    "withGlobalTauri": false
+  },
+  "package": {
+    "productName": "MinIO Desktop",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true
+      },
+      "dialog": {
+        "all": true
+      },
+      "fs": {
+        "all": true,
+        "scope": ["$APPDATA/*", "$APPDATA/**", "$RESOURCE/*", "$RESOURCE/**"]
+      },
+      "path": {
+        "all": true
+      },
+      "window": {
+        "all": false,
+        "close": true,
+        "hide": true,
+        "show": true,
+        "maximize": true,
+        "minimize": true,
+        "setFullscreen": true,
+        "setFocus": true,
+        "setPosition": true,
+        "setSize": true,
+        "setTitle": true
+      }
+    },
+    "bundle": {
+      "active": true,
+      "targets": "all",
+      "identifier": "com.minio.desktop",
+      "icon": [
+        "icons/icon.icns"
+      ]
+    },
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' http://localhost:8080; media-src 'self' http://localhost:8080; connect-src 'self' http://localhost:8080; fullscreen 'self'"
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "MinIO Desktop",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ]
+  }
+}
