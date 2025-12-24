@@ -94,38 +94,59 @@ function handleKeyDown(event: KeyboardEvent) {
   }
 }
 
-// Play previous image in the list
+// Play previous video/image in the list
 async function playPrevious() {
   if (currentVideoIndex.value === -1 || videoFiles.value.length <= 1) return;
   
-  // Get the previous image in the list (loop back to end if at beginning)
+  // Get the previous item in the list (loop back to end if at beginning)
   const prevIndex = (currentVideoIndex.value - 1 + videoFiles.value.length) % videoFiles.value.length;
-  const prevImageKey = videoFiles.value[prevIndex];
+  const prevKey = videoFiles.value[prevIndex];
   
-  if (prevImageKey) {
+  if (prevKey) {
     try {
-      // Update the current object key and load the previous image
+      // Update the current object key and load the previous item
       currentVideoIndex.value = prevIndex;
       
-      // Use getObjectData to avoid certificate issues
-      const imageData = await api.getObjectData(props.bucket, prevImageKey)
-      const ext = prevImageKey.split('.').pop()?.toLowerCase() || 'jpg'
-      const mimeType = getMimeType(ext)
-      const blob = new Blob([imageData], { type: mimeType })
-      imageUrl.value = URL.createObjectURL(blob)
-      console.log('Playing previous image:', prevImageKey);
-      
-      // Update the fileName to match the new image
-      const newFileName = prevImageKey.split('/').pop() || prevImageKey;
-      
-      // We need to update the image source
-      const imgElement = document.querySelector('img') as HTMLImageElement;
-      if (imgElement) {
-        imgElement.src = imageUrl.value;
+      if (isVideo.value) {
+        // For videos, use stream URL directly
+        videoUrl.value = await api.getStreamUrl(props.bucket, prevKey)
+        console.log('Playing previous video:', prevKey)
+        
+        // We need to update the video source and reload
+        const videoElement = document.querySelector('video') as HTMLVideoElement
+        if (videoElement) {
+          videoElement.src = videoUrl.value
+          videoElement.load()
+          videoElement.play()
+        }
+      } else if (isImage.value) {
+        // Clean up old image blob URL
+        if (imageUrl.value && imageUrl.value.startsWith('blob:')) {
+          URL.revokeObjectURL(imageUrl.value)
+        }
+        
+        // For images, use getObjectData to avoid certificate issues
+        const imageData = await api.getObjectData(props.bucket, prevKey)
+        const ext = prevKey.split('.').pop()?.toLowerCase() || 'jpg'
+        const mimeType = getMimeType(ext)
+        const uint8Data = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData)
+        const blob = new Blob([uint8Data], { type: mimeType })
+        imageUrl.value = URL.createObjectURL(blob)
+        console.log('Loading previous image:', prevKey, 'MIME type:', mimeType)
+        
+        // We need to update the image source
+        const imgElement = document.querySelector('img') as HTMLImageElement
+        if (imgElement) {
+          imgElement.src = imageUrl.value
+        }
       }
     } catch (error) {
-      console.error('Failed to load previous image:', error);
-      alert('加载上一张图片失败: ' + (error as Error).message);
+      console.error('Failed to load previous item:', error);
+      if (isVideo.value) {
+        alert('加载上一个视频失败: ' + (error as Error).message);
+      } else if (isImage.value) {
+        alert('加载上一张图片失败: ' + (error as Error).message);
+      }
     }
   }
 }
@@ -157,33 +178,15 @@ async function loadMedia() {
   try {
     console.log('Loading media:', props.fileName, 'Type:', isVideo.value ? 'video' : 'image')
     if (isVideo.value) {
-      // For small videos, try using Blob URL similar to images
-      console.log('Fetching video data...')
-      const streamUrl = await api.getStreamUrl(props.bucket, props.objectKey)
-      console.log('Stream URL obtained:', streamUrl)
-      
-      // Fetch the video data
-      const response = await fetch(streamUrl)
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`)
-      }
-      
-      console.log('Response headers:', {
-        contentType: response.headers.get('content-type'),
-        contentLength: response.headers.get('content-length')
-      })
-      
-      const blob = await response.blob()
-      console.log('Video blob created, size:', blob.size, 'type:', blob.type)
-      
-      // Create blob URL
-      videoUrl.value = URL.createObjectURL(blob)
-      console.log('Video blob URL created:', videoUrl.value)
+      // 对于视频,直接使用流媒体 URL,避免一次性加载到内存
+      // 流媒体服务器支持 Range 请求,可以实现渐进式加载
+      videoUrl.value = await api.getStreamUrl(props.bucket, props.objectKey)
+      console.log('Video stream URL:', videoUrl.value)
       
       // Load video list for next button functionality
       await loadVideoList()
     } else if (isImage.value) {
-      // For images, use getObjectData to avoid certificate issues
+      // 图片使用 Blob URL 方式(图片通常较小,可以一次性加载)
       const imageData = await api.getObjectData(props.bucket, props.objectKey)
       console.log('Image data loaded:')
       console.log('  - Type:', Object.prototype.toString.call(imageData))
@@ -463,13 +466,19 @@ async function playNext() {
           videoElement.play()
         }
       } else if (isImage.value) {
+        // Clean up old image blob URL
+        if (imageUrl.value && imageUrl.value.startsWith('blob:')) {
+          URL.revokeObjectURL(imageUrl.value)
+        }
+        
         // For images, use getObjectData to avoid certificate issues
         const imageData = await api.getObjectData(props.bucket, nextKey)
         const ext = nextKey.split('.').pop()?.toLowerCase() || 'jpg'
         const mimeType = getMimeType(ext)
-        const blob = new Blob([imageData], { type: mimeType })
+        const uint8Data = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData)
+        const blob = new Blob([uint8Data], { type: mimeType })
         imageUrl.value = URL.createObjectURL(blob)
-        console.log('Loading next image:', nextKey)
+        console.log('Loading next image:', nextKey, 'MIME type:', mimeType)
         
         // We need to update the image source
         const imgElement = document.querySelector('img') as HTMLImageElement
@@ -530,9 +539,7 @@ function cleanup() {
   if (imageUrl.value && imageUrl.value.startsWith('blob:')) {
     URL.revokeObjectURL(imageUrl.value)
   }
-  if (videoUrl.value && videoUrl.value.startsWith('blob:')) {
-    URL.revokeObjectURL(videoUrl.value)
-  }
+  // 视频现在使用流媒体 URL,不是 blob URL,不需要 revoke
   imageUrl.value = ''
   videoUrl.value = ''
 }
@@ -580,28 +587,36 @@ function onVideoError(event: Event) {
     currentSrc: videoElement.currentSrc
   })
   
-  // Try to fetch the URL directly to see what's wrong
-  if (videoUrl.value) {
-    console.log('Attempting direct fetch to diagnose issue...')
-    fetch(videoUrl.value)
-      .then(response => {
-        console.log('Fetch response:', {
-          status: response.status,
-          statusText: response.statusText,
-          contentType: response.headers.get('content-type'),
-          contentLength: response.headers.get('content-length')
-        })
-        return response.text()
-      })
-      .then(text => {
-        console.log('Response body preview:', text.substring(0, 200))
-      })
-      .catch(err => {
-        console.error('Fetch failed:', err)
-      })
+  // 视频加载失败的错误码:
+  // 1 = MEDIA_ERR_ABORTED - 用户中止
+  // 2 = MEDIA_ERR_NETWORK - 网络错误  
+  // 3 = MEDIA_ERR_DECODE - 解码错误
+  // 4 = MEDIA_ERR_SRC_NOT_SUPPORTED - 不支持的格式
+  
+  let errorMsg = '视频加载失败'
+  let suggestion = ''
+  
+  if (videoElement.error) {
+    switch (videoElement.error.code) {
+      case 1:
+        errorMsg = '视频加载被中止'
+        break
+      case 2:
+        errorMsg = '网络错误,请检查连接后重试'
+        suggestion = '\n\n可能原因:\n- 网络不稳定\n- MinIO 服务器连接中断'
+        break
+      case 3:
+        errorMsg = '视频解码失败'
+        suggestion = '\n\n可能原因:\n- 文件损坏或不完整\n- 加密状态不匹配(上传时加密状态与当前不一致)\n\n建议:\n1. 检查上传任务是否成功完成\n2. 尝试切换加密开关后重试\n3. 重新上传该文件'
+        break
+      case 4:
+        errorMsg = '不支持此视频格式或文件损坏'
+        suggestion = '\n\n可能原因:\n- 文件上传不完整(文件大小异常)\n- 加密状态不匹配\n\n建议重新上传该文件'
+        break
+    }
   }
   
-  alert('视频加载失败，请检查连接或稍后重试')
+  alert(errorMsg + suggestion)
 }
 
 function onVideoCanPlay() {
@@ -614,10 +629,12 @@ function onVideoMetadataLoaded() {
 
 function onVideoLoadStart() {
   console.log('Video load started')
+  // 大视频可能需要较长时间加载第一个分片
 }
 
 function onVideoWaiting() {
-  console.log('Video is waiting for data')
+  console.log('Video is waiting for data - buffering...')
+  // 缓冲中,对于大视频这是正常现象
 }
 
 function onVideoPlaying() {
