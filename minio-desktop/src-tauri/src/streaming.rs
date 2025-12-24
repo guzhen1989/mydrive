@@ -36,7 +36,7 @@ impl StreamServer {
             db: db.clone(),
         };
         
-        println!("Starting stream server on port {}", port);
+        eprintln!("[StreamServer] Starting stream server on port {}", port);
         
         // Start HTTP server in background
         let app_state = AppState {
@@ -56,22 +56,38 @@ impl StreamServer {
                 )
                 .with_state(app_state);
             
-            match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
-                Ok(listener) => {
-                    println!("Stream server listening on http://127.0.0.1:{}", port);
-                    if let Err(e) = axum::serve(listener, app).await {
-                        eprintln!("Stream server error: {:?}", e);
+            // Try multiple times to bind the server
+            let mut attempts = 0;
+            let max_attempts = 5;
+            
+            while attempts < max_attempts {
+                attempts += 1;
+                eprintln!("[StreamServer] Attempt {} to bind to 127.0.0.1:{}", attempts, port);
+                
+                match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
+                    Ok(listener) => {
+                        eprintln!("[StreamServer] ✓ Stream server successfully bound to http://127.0.0.1:{}", port);
+                        if let Err(e) = axum::serve(listener, app).await {
+                            eprintln!("[StreamServer] ERROR: Stream server error: {:?}", e);
+                        }
+                        return;
+                    }
+                    Err(e) => {
+                        eprintln!("[StreamServer] ERROR: Failed to bind to port {} (attempt {}): {:?}", port, attempts, e);
+                        if attempts < max_attempts {
+                            eprintln!("[StreamServer] Waiting 500ms before retry...");
+                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        }
                     }
                 }
-                Err(e) => {
-                    eprintln!("Failed to bind stream server to port {}: {:?}", port, e);
-                }
             }
+            
+            eprintln!("[StreamServer] FATAL: Failed to start stream server after {} attempts", max_attempts);
         });
         
         // Give the server a moment to start
-        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-        println!("Stream server started successfully");
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+        eprintln!("[StreamServer] Stream server initialization complete");
         
         server
     }
@@ -116,24 +132,24 @@ async fn stream_handler(
     Path(token): Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    println!("Stream request received for token: {}", token);
+    eprintln!("[StreamHandler] Stream request received for token: {}", token);
     
     // Validate token
     let stream_token = {
         let tokens = state.tokens.lock().await;
-        println!("Looking for token: {} in {} tokens", token, tokens.len());
+        eprintln!("[StreamHandler] Looking for token: {} in {} tokens", token, tokens.len());
         match tokens.get(&token) {
             Some(t) => {
                 if t.expires_at < chrono::Utc::now() {
-                    println!("Token expired: {}", token);
+                    eprintln!("[StreamHandler] ERROR: Token expired: {}", token);
                     return (StatusCode::UNAUTHORIZED, "Token expired").into_response();
                 }
-                println!("Token validated: {} -> {}/{}", token, t.bucket, t.object_key);
+                eprintln!("[StreamHandler] ✓ Token validated: {} -> {}/{}", token, t.bucket, t.object_key);
                 t.clone()
             }
             None => {
-                println!("Invalid token: {}", token);
-                println!("Available tokens: {:?}", tokens.keys().take(5).collect::<Vec<_>>());
+                eprintln!("[StreamHandler] ERROR: Invalid token: {}", token);
+                eprintln!("[StreamHandler] Available tokens: {:?}", tokens.keys().take(5).collect::<Vec<_>>());
                 return (StatusCode::NOT_FOUND, "Invalid token").into_response();
             }
         }
@@ -236,6 +252,24 @@ async fn stream_handler(
     let content_length = result.content_length().unwrap_or(0);
     println!("Content length: {}", content_length);
     
+    // For Range requests, we need the TOTAL file size, not the chunk size
+    // MinIO returns content-range header like "bytes 0-1/12345678" for Range requests
+    let content_range_header = result.content_range();
+    println!("MinIO content-range: {:?}", content_range_header);
+    
+    // Extract total file size from content-range header if present
+    let total_file_size = if let Some(range_str) = content_range_header {
+        // Parse "bytes 0-1/12345678" to extract 12345678
+        if let Some(slash_pos) = range_str.rfind('/') {
+            range_str[slash_pos + 1..].parse::<i64>().unwrap_or(content_length)
+        } else {
+            content_length
+        }
+    } else {
+        content_length
+    };
+    println!("Total file size: {}", total_file_size);
+    
     // Try to get content type from MinIO, but prefer inferring from file extension
     let minio_content_type = result.content_type();
     println!("MinIO content type: {:?}", minio_content_type);
@@ -267,21 +301,24 @@ async fn stream_handler(
     println!("Final content type: {}", content_type);
     
     // Check if content length is too small for a video file
-    if content_type.starts_with("video/") && content_length < 1000 {
-        println!("ERROR: Video file is suspiciously small ({} bytes)!", content_length);
-        println!("This usually means:");
-        println!("  1. File upload was incomplete or failed");
-        println!("  2. Encryption mismatch: file was uploaded without encryption but trying to decrypt");
-        println!("  3. Encryption mismatch: file was uploaded with encryption but trying to read without decryption");
-        println!("Suggestion: Check upload task status and re-upload the file");
+    // BUT: Only warn for full requests, not Range requests
+    // (browsers often request tiny ranges to probe the file)
+    // Use total_file_size for this check, not content_length (which is chunk size for Range requests)
+    if content_type.starts_with("video/") && total_file_size < 1000 && range_header.is_none() {
+        eprintln!("ERROR: Video file is suspiciously small ({} bytes)!", content_length);
+        eprintln!("This usually means:");
+        eprintln!("  1. File upload was incomplete or failed");
+        eprintln!("  2. Encryption mismatch: file was uploaded without encryption but trying to decrypt");
+        eprintln!("  3. Encryption mismatch: file was uploaded with encryption but trying to read without decryption");
+        eprintln!("Suggestion: Check upload task status and re-upload the file");
         
         // Try to detect encryption mismatch
         if let Some(ref key) = encryption_key {
             if key.enabled {
-                println!("Currently trying to decrypt with SSE-C. If file was uploaded WITHOUT encryption, this will fail.");
+                eprintln!("Currently trying to decrypt with SSE-C. If file was uploaded WITHOUT encryption, this will fail.");
             }
         } else {
-            println!("Currently NOT using SSE-C decryption. If file was uploaded WITH encryption, this will fail.");
+            eprintln!("Currently NOT using SSE-C decryption. If file was uploaded WITH encryption, this will fail.");
         }
     }
     
@@ -307,9 +344,10 @@ async fn stream_handler(
     // Calculate content range if range request
     if let Some(range_str) = range_header {
         println!("Processing range request: {}", range_str);
-        if let Some(content_range) = calculate_content_range(range_str, content_length) {
+        // Use total_file_size for Content-Range header, NOT content_length (which is just the chunk size)
+        if let Some(content_range) = calculate_content_range(range_str, total_file_size) {
             // For range requests, we need to determine the actual length of the range
-            let actual_range_length = parse_range_length(range_str, content_length).unwrap_or(content_length);
+            let actual_range_length = parse_range_length(range_str, total_file_size).unwrap_or(content_length);
             response_headers.insert(header::CONTENT_LENGTH, actual_range_length.to_string().parse().unwrap());
             response_headers.insert(header::CONTENT_RANGE, content_range.parse().unwrap());
             println!("Sending 206 Partial Content response with range: {}, length: {}", content_range, actual_range_length);

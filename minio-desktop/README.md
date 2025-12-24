@@ -1,6 +1,14 @@
 # MinIO Tauri 桌面客户端
 
+✅ **构建成功**
+
 一个基于 Tauri 构建的 MinIO 客户端，支持文件上传、下载、预览等功能。
+
+## 构建状态
+
+- 项目已成功构建为 macOS 应用
+- 产物包括 `.app` 应用程序包和 `.dmg` 安装包
+- 支持 aarch64 (Apple Silicon) 架构
 
 ## 功能特性
 
@@ -80,11 +88,13 @@ cargo tauri build
 
 ```bash
 # 构建发布版本
-npm run tauri build -- --release
+npm run tauri build
 
-# 或者
-cargo tauri build --release
+# 或者直接使用 Cargo
+cargo tauri build
 ```
+
+> **注意**: `npm run tauri build` 会自动构建发布版本。如果需要指定其他参数，请参考 `cargo tauri build --help`。
 
 ### 3. 构建产物说明
 
@@ -92,16 +102,16 @@ cargo tauri build --release
 
 ```
 src-tauri/target/
-├── debug/          # 调试版本产物
-│   └── bundle/macos/
-│       └── minio-desktop_x.x.x_x64.dmg
 ├── release/        # 发布版本产物
-│   └── bundle/macos/
-│       └── minio-desktop_x.x.x_x64.dmg
+│   └── bundle/
+│       ├── macos/
+│       │   └── MinIO Desktop.app     # macOS 应用程序包
+│       └── dmg/
+│           └── MinIO Desktop_0.1.0_aarch64.dmg  # macOS 磁盘映像安装包
 ```
 
-- `.app` - macOS 应用程序包
-- `.dmg` - macOS 磁盘映像安装包
+- `.app` - macOS 应用程序包，可直接运行
+- `.dmg` - macOS 磁盘映像安装包，用于分发
 
 ### 4. 自定义构建配置
 
@@ -112,26 +122,67 @@ src-tauri/target/
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devUrl": "http://localhost:1420",
-    "frontendDist": "../dist"
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist",
+    "withGlobalTauri": false
+  },
+  "package": {
+    "productName": "MinIO Desktop",
+    "version": "0.1.0"
   },
   "tauri": {
+    "allowlist": {
+      "all": false,
+      "shell": {
+        "all": false,
+        "open": true
+      },
+      "dialog": {
+        "all": true
+      },
+      "fs": {
+        "all": true,
+        "scope": ["$APPDATA/*", "$APPDATA/**", "$RESOURCE/*", "$RESOURCE/**"]
+      },
+      "path": {
+        "all": true
+      },
+      "window": {
+        "all": false,
+        "close": true,
+        "hide": true,
+        "show": true,
+        "maximize": true,
+        "minimize": true,
+        "setFullscreen": true,
+        "setFocus": true,
+        "setPosition": true,
+        "setSize": true,
+        "setTitle": true
+      }
+    },
     "bundle": {
       "active": true,
       "targets": "all",
-      "identifier": "com.minio.desktop",
+      "identifier": "com.minio.Desktop",
       "icon": [
-        "icons/32x32.png",
-        "icons/128x128.png",
-        "icons/128x128@2x.png",
-        "icons/icon.icns",
-        "icons/icon.ico"
-      ],
-      "publisher": "MinIO Team",
-      "category": "DeveloperTool",
-      "shortDescription": "MinIO Desktop Client",
-      "longDescription": "A desktop client for MinIO object storage with SSE-C encryption support."
-    }
+        "icons/icon.icns"
+      ]
+    },
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' http://localhost:1420; media-src 'self' http://localhost:1420; connect-src 'self' http://localhost:1420; fullscreen 'self'"
+    },
+    "windows": [
+      {
+        "fullscreen": false,
+        "resizable": true,
+        "title": "MinIO Desktop",
+        "width": 1280,
+        "height": 800,
+        "minWidth": 800,
+        "minHeight": 600
+      }
+    ]
   }
 }
 ```

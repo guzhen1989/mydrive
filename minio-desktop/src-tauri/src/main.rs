@@ -1,5 +1,5 @@
-// Prevents additional console window on Windows in release builds
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+// Allow console window to see logs in production
+// #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
 mod db;
@@ -51,6 +51,7 @@ fn main() {
             commands::transfer::delete_task,
             commands::transfer::delete_completed_tasks,
             commands::streaming::get_stream_url,
+            commands::streaming::check_stream_server,
             commands::encryption::generate_encryption_key,
             commands::encryption::save_encryption_key,
             commands::encryption::get_encryption_key,

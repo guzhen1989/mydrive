@@ -7,32 +7,32 @@ pub async fn get_stream_url(
     bucket: String,
     object_key: String,
 ) -> Result<String> {
-    println!("Getting stream URL for: {}/{}", bucket, object_key);
+    eprintln!("[get_stream_url] Getting stream URL for: {}/{}", bucket, object_key);
     
     // Check if MinIO client is connected
     {
         let client_guard = state.minio_client.lock().await;
         if client_guard.is_none() {
-            println!("ERROR: MinIO client not connected");
+            eprintln!("[get_stream_url] ERROR: MinIO client not connected");
             return Err(crate::error::AppError::NotConnected);
         }
-        println!("MinIO client is connected");
+        eprintln!("[get_stream_url] MinIO client is connected");
     }
     
     // Get or create stream server
     let mut server_guard = state.stream_server.lock().await;
     
     if server_guard.is_none() {
-        println!("Creating new stream server on port 8080");
+        eprintln!("[get_stream_url] Creating new stream server on port 8080");
         let server = crate::streaming::StreamServer::new(
             8080,
             state.minio_client.clone(),
             state.db.clone()
         ).await;
         *server_guard = Some(server);
-        println!("Stream server created successfully");
+        eprintln!("[get_stream_url] Stream server created successfully");
     } else {
-        println!("Using existing stream server");
+        eprintln!("[get_stream_url] Using existing stream server");
     }
     
     let server = server_guard.as_ref().unwrap();
@@ -40,7 +40,35 @@ pub async fn get_stream_url(
     let port = server.get_port();
     let url = format!("http://localhost:{}/stream/{}", port, token);
     
-    println!("Generated stream URL: {}", url);
+    eprintln!("[get_stream_url] Generated stream URL: {}", url);
     
     Ok(url)
+}
+
+#[tauri::command]
+pub async fn check_stream_server(
+    state: State<'_, AppState>,
+) -> Result<bool> {
+    eprintln!("[check_stream_server] Checking stream server status");
+    
+    let server_guard = state.stream_server.lock().await;
+    let is_running = server_guard.is_some();
+    
+    eprintln!("[check_stream_server] Stream server running: {}", is_running);
+    
+    if is_running {
+        // Try to make a test request
+        match reqwest::get("http://localhost:8080/stream/test").await {
+            Ok(response) => {
+                eprintln!("[check_stream_server] Test request status: {}", response.status());
+                Ok(true)
+            }
+            Err(e) => {
+                eprintln!("[check_stream_server] Test request failed: {:?}", e);
+                Ok(false)
+            }
+        }
+    } else {
+        Ok(false)
+    }
 }

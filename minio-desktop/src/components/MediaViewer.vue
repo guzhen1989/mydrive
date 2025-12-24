@@ -180,8 +180,40 @@ async function loadMedia() {
     if (isVideo.value) {
       // 对于视频,直接使用流媒体 URL,避免一次性加载到内存
       // 流媒体服务器支持 Range 请求,可以实现渐进式加载
-      videoUrl.value = await api.getStreamUrl(props.bucket, props.objectKey)
-      console.log('Video stream URL:', videoUrl.value)
+      try {
+        videoUrl.value = await api.getStreamUrl(props.bucket, props.objectKey)
+        console.log('Video stream URL:', videoUrl.value)
+        
+        // Test if the stream URL is accessible and check file size
+        const testResponse = await fetch(videoUrl.value, { method: 'HEAD' })
+        if (!testResponse.ok) {
+          throw new Error(`流媒体服务器响应失败: ${testResponse.status} ${testResponse.statusText}`)
+        }
+        
+        const contentLength = parseInt(testResponse.headers.get('content-length') || '0')
+        console.log('Stream URL is accessible, content-type:', testResponse.headers.get('content-type'), 'size:', contentLength)
+        
+        // Check if file size is suspiciously small for a video
+        if (contentLength < 10000) {
+          throw new Error(`无法播放此视频文件
+
+文件大小异常: ${contentLength} 字节
+
+可能原因:
+1. 文件上传不完整
+2. 加密状态不匹配:
+   - 文件以明文上传,但现在尝试解密访问
+   - 或文件以加密上传,但现在尝试明文访问
+
+建议:
+1. 检查文件列表中的文件大小
+2. 确认加密开关状态与上传时一致
+3. 重新上传该文件`)
+        }
+      } catch (error) {
+        console.error('Failed to get stream URL or access stream:', error)
+        throw error
+      }
       
       // Load video list for next button functionality
       await loadVideoList()
@@ -214,7 +246,7 @@ async function loadMedia() {
     }
   } catch (error) {
     console.error('Failed to load media:', error)
-    alert('加载媒体失败: ' + (error as Error).message)
+    alert((error as Error).message || '加载媒体失败')
   } finally {
     loading.value = false
   }
