@@ -1,0 +1,4 @@
+
+# 加密配置
+ENCRYPTION_KEY = "P49tzFWCfDSMbkRTpKnGpebFxK6ytkuk0pV5dIkMvmk="
+ENCRYPTION_KEY_MD5 = "Z7pYfqqME3dV4e32D2Y/Lw=="
