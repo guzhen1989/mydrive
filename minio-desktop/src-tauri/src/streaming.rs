@@ -60,29 +60,30 @@ impl StreamServer {
             let mut attempts = 0;
             let max_attempts = 5;
             
-            while attempts < max_attempts {
+            loop {
                 attempts += 1;
                 eprintln!("[StreamServer] Attempt {} to bind to 127.0.0.1:{}", attempts, port);
                 
                 match tokio::net::TcpListener::bind(format!("127.0.0.1:{}", port)).await {
                     Ok(listener) => {
                         eprintln!("[StreamServer] ✓ Stream server successfully bound to http://127.0.0.1:{}", port);
+                        // Run the server and handle any errors
                         if let Err(e) = axum::serve(listener, app).await {
-                            eprintln!("[StreamServer] ERROR: Stream server error: {:?}", e);
+                            eprintln!("[StreamServer] ERROR in serve: {:?}", e);
                         }
                         return;
                     }
                     Err(e) => {
                         eprintln!("[StreamServer] ERROR: Failed to bind to port {} (attempt {}): {:?}", port, attempts, e);
-                        if attempts < max_attempts {
-                            eprintln!("[StreamServer] Waiting 500ms before retry...");
-                            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                        if attempts >= max_attempts {
+                            eprintln!("[StreamServer] FATAL: Failed to start stream server after {} attempts", max_attempts);
+                            return;
                         }
+                        eprintln!("[StreamServer] Waiting 500ms before retry...");
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     }
                 }
             }
-            
-            eprintln!("[StreamServer] FATAL: Failed to start stream server after {} attempts", max_attempts);
         });
         
         // Give the server a moment to start

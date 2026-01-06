@@ -83,6 +83,9 @@ fn main() {
             
             app.manage(state);
             
+            // Log application startup
+            eprintln!("[App] MinIO Desktop application started");
+            
             Ok(())
         })
         .run(tauri::generate_context!())

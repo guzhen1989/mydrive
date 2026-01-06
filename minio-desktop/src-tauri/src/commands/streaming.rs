@@ -35,12 +35,27 @@ pub async fn get_stream_url(
         eprintln!("[get_stream_url] Using existing stream server");
     }
     
+    // Verify the stream server is actually running
     let server = server_guard.as_ref().unwrap();
     let token = server.create_token(bucket, object_key).await;
     let port = server.get_port();
-    let url = format!("http://localhost:{}/stream/{}", port, token);
     
+    // Create URL
+    let url = format!("http://localhost:{}/stream/{}", port, token);
     eprintln!("[get_stream_url] Generated stream URL: {}", url);
+    
+    // Test if the server is actually responding
+    match reqwest::get(&url).await {
+        Ok(response) => {
+            eprintln!("[get_stream_url] Stream URL test response: {}", response.status());
+            if response.status() == 404 {
+                eprintln!("[get_stream_url] WARNING: Stream server returned 404, may not be ready yet");
+            }
+        }
+        Err(e) => {
+            eprintln!("[get_stream_url] Stream URL test failed: {:?}", e);
+        }
+    }
     
     Ok(url)
 }
